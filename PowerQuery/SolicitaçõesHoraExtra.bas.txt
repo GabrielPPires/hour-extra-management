@@ -1,0 +1,32 @@
+let
+    Fonte = SharePoint.Tables("Solicitações-Hora-extra", [Implementation="2.0", ViewMode="All"]),
+    #"ID1" = Fonte{[Id="ID1"]}[Items],
+    #"Outras Colunas Removidas" = Table.SelectColumns(#"ID1",{"Criado por", "Qual é a data para realizações dos trabalhos?", "Qual é a área de realização do trabalho?", "Qual o posto e equipamento", "Justificativa para realização do trabalho?", "Criticidade", "Qual é o impacto da atividade?", "Qual é o ganho?", "Qual é a origem da atividade?", "Centro de Custo", "Tempo de execução de atividade?", "Colaboradores Sugeridos", "Status da Atividade", "Observações", "Pressione Delete para excluir o ícone.", "ID de Ativo de Conformidade", "ID", "Created Via", "Criado"}),
+    #"Colaboradores Sugeridos Expandido" = Table.ExpandTableColumn(#"Outras Colunas Removidas", "Colaboradores Sugeridos", {"id", "value", "title", "email", "sip", "picture"}, {"Colaboradores Sugeridos.id", "Colaboradores Sugeridos.value", "Colaboradores Sugeridos.title", "Colaboradores Sugeridos.email", "Colaboradores Sugeridos.sip", "Colaboradores Sugeridos.picture"}),
+    #"Consultas Mescladas1" = Table.NestedJoin(#"Colaboradores Sugeridos Expandido", {"Colaboradores Sugeridos.email"}, COLABORADORES, {"E-MAIL"}, "COLABORADORES", JoinKind.LeftOuter),
+    #"COLABORADORES Expandido" = Table.ExpandTableColumn(#"Consultas Mescladas1", "COLABORADORES", {"IPN"}, {"COLABORADORES.IPN"}),
+    #"Colunas Removidas" = Table.RemoveColumns(#"COLABORADORES Expandido",{"Colaboradores Sugeridos.id", "Colaboradores Sugeridos.picture", "Pressione Delete para excluir o ícone.", "ID de Ativo de Conformidade", "Colaboradores Sugeridos.value", "Colaboradores Sugeridos.email", "Colaboradores Sugeridos.sip", "Created Via"}),
+    #"Colunas Reordenadas" = Table.ReorderColumns(#"Colunas Removidas",{"ID", "Criado", "Qual é a data para realizações dos trabalhos?", "Qual é a área de realização do trabalho?", "Qual o posto e equipamento", "Justificativa para realização do trabalho?", "Criticidade", "Qual é o impacto da atividade?", "Qual é o ganho?", "Qual é a origem da atividade?", "Centro de Custo", "Tempo de execução de atividade?", "Colaboradores Sugeridos.title", "COLABORADORES.IPN", "Status da Atividade", "Observações"}),
+    #"Colunas Renomeadas" = Table.RenameColumns(#"Colunas Reordenadas",{{"Qual é a data para realizações dos trabalhos?", "DATA_HE"}, {"Criado", "HORA_INI"}, {"Qual é a área de realização do trabalho?", "ÁREA"}, {"Qual o posto e equipamento", "POSTO"}, {"Justificativa para realização do trabalho?", "JUSTIF"}, {"Criticidade", "CRITICIDADE"}, {"Qual é o impacto da atividade?", "IMPACTO"}, {"Qual é o ganho?", "GANHO"}, {"Qual é a origem da atividade?", "ORIGEM"}, {"Centro de Custo", "CC"}, {"Tempo de execução de atividade?", "DURAÇÃO"}, {"Colaboradores Sugeridos.title", "COLABORADORES_SUGERIDOS"}, {"Status da Atividade", "STATUS"}, {"Observações", "OBS"}, {"ID", "ID_ATIVIDADES"}, {"COLABORADORES.IPN", "IPN"}}),
+    Personalizar1 = Table.AddColumn(
+    #"Colunas Renomeadas",
+    "JUSTIFICATIVA",
+    each Text.Start(
+        [ÁREA] & "-" &
+        [POSTO] & ":" &
+        [JUSTIF],
+        150
+    ),
+    type text
+),
+    Personalizar2 = Personalizar1,
+    #"Colunas Removidas1" = Table.RemoveColumns(Personalizar2,{"ÁREA", "POSTO", "JUSTIF"}),
+    #"Tipo Alterado" = Table.TransformColumnTypes(#"Colunas Removidas1",{{"DATA_HE", type date}}),
+    #"Consultas Mescladas" = Table.NestedJoin(#"Tipo Alterado", {"DATA_HE"}, #"DIA-SEMANA", {"DATA"}, "DIA-SEMANA", JoinKind.Inner),
+    #"Criado por Expandido" = Table.ExpandListColumn(#"Consultas Mescladas", "Criado por"),
+    #"Criado por Expandido1" = Table.ExpandRecordColumn(#"Criado por Expandido", "Criado por", {"title", "email"}, {"Criado por.title", "Criado por.email"}),
+    #"Colunas Renomeadas1" = Table.RenameColumns(#"Criado por Expandido1",{{"Criado por.title", "NOME"}, {"Criado por.email", "E-MAIL"}}),
+    #"Colunas Reordenadas1" = Table.ReorderColumns(#"Colunas Renomeadas1",{"ID_ATIVIDADES", "NOME", "E-MAIL", "HORA_INI", "DATA_HE", "CRITICIDADE", "IMPACTO", "GANHO", "ORIGEM", "CC", "DURAÇÃO", "COLABORADORES_SUGERIDOS", "IPN", "STATUS", "OBS", "JUSTIFICATIVA", "DIA-SEMANA"}),
+    #"Personalização Adicionada" = Table.AddColumn(#"Colunas Reordenadas1", "CHAVE_CONTROLE", each Text.From([ID_ATIVIDADES]) & "|" & Text.From([IPN]))
+in
+    #"Personalização Adicionada"

@@ -1,0 +1,53 @@
+let
+    Fonte = SharePoint.Contents("ID3", [ApiVersion = 15]),
+
+    #"Shared Documents" =
+        Fonte{[Name="Shared Documents"]}[Content],
+
+    General =
+        #"Shared Documents"{[Name="General"]}[Content],
+
+    #"GESTÃO DE COLABORADORES" =
+        General{[Name="12. GESTÃO DE PESSOAS"]}[Content],
+
+    #"Gestao de Colaboradores xlsm" =
+        #"GESTÃO DE COLABORADORES"{[Name="Gestao de Colaboradores.xlsm"]}[Content],
+
+    #"Pasta de Trabalho Importada do Excel" =
+        Excel.Workbook(
+            #"Gestao de Colaboradores xlsm",
+            null,
+            true
+        ),
+
+    COLABORADORES_Sheet =
+        #"Pasta de Trabalho Importada do Excel"{[Item="COLABORADORES", Kind="Sheet"]}[Data],
+
+    #"Linhas Superiores Removidas" =
+        Table.Skip(COLABORADORES_Sheet, 9),
+
+    #"Cabeçalhos Promovidos" =
+        Table.PromoteHeaders(
+            #"Linhas Superiores Removidas",
+            [PromoteAllScalars=true]
+        ),
+
+    #"Outras Colunas Removidas" =
+        Table.SelectColumns(#"Cabeçalhos Promovidos",{"IPN", "COLABORADOR", "TURNO", "E-MAIL", "FUNÇÃO", "BPU"}),
+
+    #"Tipo Alterado" =
+        Table.TransformColumnTypes(
+            #"Outras Colunas Removidas",
+            {
+                {"IPN", type text},
+                {"COLABORADOR", type text},
+                {"TURNO", type text},
+                {"FUNÇÃO", type text}
+            }
+        ),
+
+    #"Linhas Filtradas" =
+        Table.SelectRows(#"Tipo Alterado", each ([TURNO] <> null and [TURNO] <> "-" and [TURNO] <> "ZDESL")),
+    #"Linhas Classificadas" = Table.Sort(#"Linhas Filtradas",{{"COLABORADOR", Order.Ascending}})
+in
+    #"Linhas Classificadas"

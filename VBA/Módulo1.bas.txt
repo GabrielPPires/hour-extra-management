@@ -1,0 +1,733 @@
+Option Explicit
+
+'=================================================
+' GESTÃO DE HORA EXTRA - VERSÃO 2.1
+'
+' RESPONSÁVEL:
+' Gabriel Pereira
+'
+' OBJETIVO:
+' Centralizar e controlar a gestão de Hora Extra,
+' consolidando solicitações, colaboradores,
+' disponibilidade e conflitos de recursos.
+'
+' ARQUITETURA:
+'
+' MICROSOFT LISTS
+'        |
+'        v
+' SOLICITAÇÕES-HORA-EXTRA
+'        |
+'        v
+' Validação Manual
+'        |
+'        v
+' IMPORTAR HORA-EXTRA
+'        |
+'        v
+' SincronizarSolicitacoes
+'        |
+'        v
+' ProximaLinhaHoraExtra
+'        |
+'        v
+' PreencherDadosHoraExtra
+'        |
+'        v
+' BuscarColaborador
+'        |
+'        v
+' AtualizarConflitos
+'
+' FUNCIONALIDADES PRINCIPAIS:
+'
+' - Importação manual de solicitações
+' - Prevenção de registros duplicados
+' - Busca automática de colaboradores
+' - Atualização de MOD/MOS, Turno e BPU
+' - Controle visual de conflitos
+' - Integração com Disponibilidade
+' - Diagnóstico de eventos VBA
+'
+' OBSERVAÇÕES:
+'
+' - A linha 10 da FORMATAÇÃO-ORIGINAL é
+'   utilizada como modelo oficial.
+'
+' - A sincronização ocorre somente através
+'   do botão IMPORTAR HORA-EXTRA.
+'
+' - CHAVE_CONTROLE = ID_ATIVIDADES|IPN
+'
+' - Mesmo IPN + Mesma Data = Conflito.
+'
+'=================================================
+
+Function DiaSemanaHoraExtra(ByVal valorData As Variant) As String
+
+    Dim n As Long
+
+    If Not IsDate(valorData) Then
+        DiaSemanaHoraExtra = ""
+        Exit Function
+    End If
+
+    n = Weekday(CDate(valorData), vbSunday)
+
+    Select Case n
+
+        Case 1: DiaSemanaHoraExtra = "4 - Dom"
+        Case 2: DiaSemanaHoraExtra = "5 - Seg"
+        Case 3: DiaSemanaHoraExtra = "6 - Ter"
+        Case 4: DiaSemanaHoraExtra = "7 - Qua"
+        Case 5: DiaSemanaHoraExtra = "1 - Qui"
+        Case 6: DiaSemanaHoraExtra = "2 - Sex"
+        Case 7: DiaSemanaHoraExtra = "3 - Sáb"
+
+    End Select
+
+End Function
+
+Function UltimaLinhaUsadaPlanilha(ByVal ws As Worksheet) As Long
+
+    Dim cel As Range
+
+    Set cel = ws.Cells.Find( _
+        What:="*", _
+        After:=ws.Range("A1"), _
+        LookIn:=xlFormulas, _
+        LookAt:=xlPart, _
+        SearchOrder:=xlByRows, _
+        SearchDirection:=xlPrevious, _
+        MatchCase:=False)
+
+    If cel Is Nothing Then
+        UltimaLinhaUsadaPlanilha = 1
+    Else
+        UltimaLinhaUsadaPlanilha = cel.Row
+    End If
+
+End Function
+
+'=================================================
+' VERIFICA SE A CHAVE_CONTROLE JÁ EXISTE
+'
+' Evita duplicidade de registros na HORA-EXTRA
+'=================================================
+
+Function ChaveJaExisteNaHoraExtra(ByVal wsHE As Worksheet, _
+                                  ByVal chaveControle As String) As Boolean
+
+    Dim ultimaLinha As Long
+    Dim cel As Range
+
+    ultimaLinha = wsHE.Cells(wsHE.Rows.Count, "X").End(xlUp).Row
+
+    If ultimaLinha < 10 Then
+
+        ChaveJaExisteNaHoraExtra = False
+        Exit Function
+
+    End If
+
+    Set cel = wsHE.Range("X10:X" & ultimaLinha).Find( _
+                    What:=Trim(chaveControle), _
+                    LookIn:=xlValues, _
+                    LookAt:=xlWhole)
+
+    ChaveJaExisteNaHoraExtra = Not cel Is Nothing
+
+End Function
+
+'=================================================
+' ARQUITETURA DA HORA-EXTRA
+'
+' Sempre cria uma nova linha abaixo
+' do último registro existente da coluna X.
+'
+' Não reutiliza linhas vazias.
+'
+' A linha 10 da FORMATAÇÃO-ORIGINAL
+' é utilizada como modelo oficial.
+'=================================================
+Function ProximaLinhaHoraExtra(ByVal wsHE As Worksheet) As Long
+
+    Dim wsModelo As Worksheet
+    Dim proximaLinha As Long
+
+    Set wsModelo = ThisWorkbook.Sheets("FORMATAÇÃO-ORIGINAL")
+
+    ' Próxima linha abaixo do último registro existente
+    proximaLinha = wsHE.Cells(wsHE.Rows.Count, "X").End(xlUp).Row + 1
+
+    If proximaLinha < 10 Then
+        proximaLinha = 10
+    End If
+
+    wsModelo.Rows(10).Copy
+
+    wsHE.Rows(proximaLinha).Insert Shift:=xlDown
+
+    wsHE.Rows(proximaLinha).PasteSpecial Paste:=xlPasteFormats
+    wsHE.Rows(proximaLinha).PasteSpecial Paste:=xlPasteFormulasAndNumberFormats
+
+    Application.CutCopyMode = False
+
+    wsHE.Rows(proximaLinha).ClearContents
+
+    ProximaLinhaHoraExtra = proximaLinha
+
+End Function
+
+'=================================================
+' BUSCA DADOS DO COLABORADOR
+'
+' Utiliza o IPN informado na coluna P
+'
+' Preenche:
+' J = MOD/MOS
+' R = Colaborador
+' S = Turno
+' T = BPU
+'
+' Origem:
+' Aba COLABORADORES
+'=================================================
+
+Sub BuscarColaborador(ByVal linha As Long)
+
+    Dim wsHE As Worksheet
+    Dim wsColab As Worksheet
+    Dim cel As Range
+    Dim ipn As String
+
+    Set wsHE = ThisWorkbook.Sheets("HORA-EXTRA")
+    Set wsColab = ThisWorkbook.Sheets("COLABORADORES")
+
+    ipn = UCase(Trim(wsHE.Cells(linha, "P").Value))
+
+    wsHE.Cells(linha, "R").ClearContents
+    wsHE.Cells(linha, "S").ClearContents
+    wsHE.Cells(linha, "T").ClearContents
+    wsHE.Cells(linha, "J").ClearContents
+
+    If ipn = "" Then Exit Sub
+
+    Set cel = wsColab.Columns("A").Find( _
+                    What:=ipn, _
+                    LookIn:=xlValues, _
+                    LookAt:=xlWhole, _
+                    MatchCase:=False)
+
+    If cel Is Nothing Then Exit Sub
+
+    wsHE.Cells(linha, "R").Value = cel.Offset(0, 1).Value
+    wsHE.Cells(linha, "S").Value = cel.Offset(0, 2).Value
+    wsHE.Cells(linha, "T").Value = cel.Offset(0, 5).Value
+    wsHE.Cells(linha, "J").Value = cel.Offset(0, 6).Value
+
+End Sub
+
+'=================================================
+' TRANSFERE DADOS DA SOLICITAÇÃO
+'
+' Realiza o DE/PARA entre:
+'
+' SOLICITAÇÕES-HORA-EXTRA
+'          ?
+' HORA-EXTRA
+'
+' Também calcula o Dia da Semana.
+'
+' Responsável pelo preenchimento inicial
+' dos registros importados.
+'=================================================
+
+Sub PreencherDadosHoraExtra( _
+    ByVal wsSolic As Worksheet, _
+    ByVal wsHE As Worksheet, _
+    ByVal linhaSolic As Long, _
+    ByVal linhaHE As Long)
+
+    ' Dados principais
+
+    wsHE.Cells(linhaHE, "A").Value = wsSolic.Cells(linhaSolic, "B").Value
+    wsHE.Cells(linhaHE, "B").Value = wsSolic.Cells(linhaSolic, "P").Value
+    wsHE.Cells(linhaHE, "C").Value = wsSolic.Cells(linhaSolic, "G").Value
+    wsHE.Cells(linhaHE, "D").Value = wsSolic.Cells(linhaSolic, "H").Value
+    wsHE.Cells(linhaHE, "E").Value = wsSolic.Cells(linhaSolic, "K").Value
+    wsHE.Cells(linhaHE, "F").Value = wsSolic.Cells(linhaSolic, "I").Value
+    wsHE.Cells(linhaHE, "G").Value = wsSolic.Cells(linhaSolic, "J").Value
+
+    ' Data e dia da semana
+
+    wsHE.Cells(linhaHE, "H").Value = wsSolic.Cells(linhaSolic, "E").Value
+
+    wsHE.Cells(linhaHE, "I").Value = _
+        DiaSemanaHoraExtra(wsSolic.Cells(linhaSolic, "E").Value)
+
+    ' Observações
+
+    wsHE.Cells(linhaHE, "K").Value = wsSolic.Cells(linhaSolic, "O").Value
+
+    ' Criticidade
+
+    wsHE.Cells(linhaHE, "M").Value = wsSolic.Cells(linhaSolic, "F").Value
+
+    ' Status
+
+    wsHE.Cells(linhaHE, "O").Value = wsSolic.Cells(linhaSolic, "N").Value
+
+    ' IPN
+
+    wsHE.Cells(linhaHE, "P").Value = wsSolic.Cells(linhaSolic, "M").Value
+
+    ' Sugestão colaborador
+
+    wsHE.Cells(linhaHE, "Q").Value = wsSolic.Cells(linhaSolic, "L").Value
+
+    ' ID_ATIVIDADES
+
+    wsHE.Cells(linhaHE, "U").Value = wsSolic.Cells(linhaSolic, "A").Value
+
+    ' CHAVE_CONTROLE
+
+    wsHE.Cells(linhaHE, "X").Value = wsSolic.Cells(linhaSolic, "Q").Value
+
+    ' Formatação
+
+    wsHE.Cells(linhaHE, "B").WrapText = True
+    wsHE.Cells(linhaHE, "K").WrapText = True
+    wsHE.Cells(linhaHE, "Q").WrapText = True
+
+End Sub
+
+'=================================================
+' IMPORTAÇÃO DE HORA-EXTRA
+'
+' Importa registros da aba
+' SOLICITAÇÕES-HORA-EXTRA
+'
+' Apenas registros inexistentes
+' são importados.
+'
+' Controle:
+' CHAVE_CONTROLE = ID_ATIVIDADES|IPN
+'
+' Ao final:
+' Atualiza conflitos e disponibilidade.
+'=================================================
+
+Sub SincronizarSolicitacoes()
+
+    Dim wsSolic As Worksheet
+    Dim wsHE As Worksheet
+
+    Dim ultimaLinha As Long
+    Dim linhaSolic As Long
+    Dim linhaDestino As Long
+
+    Dim idSolic As String
+    Dim chaveControle As String
+    Dim eventosAntes As Boolean
+    
+    Dim Percentual As Double
+
+    eventosAntes = Application.EnableEvents
+
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+
+    On Error GoTo Fim
+
+    Set wsSolic = ThisWorkbook.Sheets("SOLICITAÇÕES-HORA-EXTRA")
+    Set wsHE = ThisWorkbook.Sheets("HORA-EXTRA")
+    
+    frmProgresso.Show vbModeless
+
+    frmProgresso.AtualizarBarra _
+    0, _
+    "Iniciando importação..."
+    
+    DoEvents
+
+    ultimaLinha = wsSolic.Cells(wsSolic.Rows.Count, "A").End(xlUp).Row
+
+    For linhaSolic = 2 To ultimaLinha
+    
+    Percentual = ((linhaSolic - 1) / (ultimaLinha - 1)) * 100
+
+    frmProgresso.AtualizarBarra _
+    Percentual, _
+    "Importando registros..."
+
+        idSolic = Trim(CStr(wsSolic.Cells(linhaSolic, "A").Value))
+        
+        chaveControle = Trim(CStr(wsSolic.Cells(linhaSolic, "Q").Value))
+
+        If idSolic <> "" Then
+
+            If Not ChaveJaExisteNaHoraExtra(wsHE, chaveControle) Then
+
+                linhaDestino = ProximaLinhaHoraExtra(wsHE)
+
+                Call PreencherDadosHoraExtra( _
+                        wsSolic, _
+                        wsHE, _
+                        linhaSolic, _
+                        linhaDestino)
+
+                Call BuscarColaborador(linhaDestino)
+
+            End If
+
+        End If
+
+    Next linhaSolic
+    
+    frmProgresso.AtualizarBarra _
+    95, _
+    "Atualizando conflitos..."
+    
+    Call AtualizarConflitos
+    
+    frmProgresso.AtualizarBarra _
+    100, _
+    "Concluído"
+    
+    Unload frmProgresso
+
+Fim:
+
+    Application.EnableEvents = eventosAntes
+    Application.ScreenUpdating = True
+
+End Sub
+
+'=================================================
+' REDEFINIR HORA-EXTRA
+'
+' Apaga completamente a aba HORA-EXTRA
+'
+' Restaura a estrutura da aba
+' FORMATAÇÃO-ORIGINAL
+'
+' Utilizado para recuperação da planilha.
+'
+' Após a restauração:
+' Atualiza conflitos automaticamente.
+'=================================================
+
+Sub RedefinirHoraExtraPeloModelo()
+
+    Const ABA_ORIGEM As String = "FORMATAÇÃO-ORIGINAL"
+    Const ABA_DESTINO As String = "HORA-EXTRA"
+
+    Dim wsOrigem As Worksheet
+    Dim wsDestino As Worksheet
+
+    Dim i As Long
+
+    Dim resp As VbMsgBoxResult
+    Dim eventosAntes As Boolean
+
+    resp = MsgBox( _
+        "Essa ação irá redefinir completamente a aba HORA-EXTRA." & vbCrLf & vbCrLf & _
+        "Todos os registros atuais serão apagados." & vbCrLf & _
+        "A aba será restaurada usando a FORMATAÇÃO-ORIGINAL." & vbCrLf & vbCrLf & _
+        "Deseja continuar?", _
+        vbQuestion + vbYesNo, _
+        "Redefinir HORA-EXTRA")
+
+    If resp <> vbYes Then Exit Sub
+
+    On Error GoTo TratarErro
+
+    eventosAntes = Application.EnableEvents
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+
+    Set wsOrigem = ThisWorkbook.Sheets(ABA_ORIGEM)
+    Set wsDestino = ThisWorkbook.Sheets(ABA_DESTINO)
+
+    On Error Resume Next
+
+    If wsDestino.AutoFilterMode Then
+        wsDestino.AutoFilterMode = False
+    End If
+
+    On Error GoTo TratarErro
+
+    wsDestino.Cells.Clear
+
+    wsOrigem.Cells.Copy
+
+    With wsDestino.Range("A1")
+        .PasteSpecial Paste:=xlPasteAll
+        .PasteSpecial Paste:=xlPasteColumnWidths
+    End With
+
+    Application.CutCopyMode = False
+
+    For i = 1 To wsOrigem.UsedRange.Rows.Count
+
+        wsDestino.Rows(i).RowHeight = wsOrigem.Rows(i).RowHeight
+
+    Next i
+
+    On Error Resume Next
+
+    wsDestino.Range("A1:X1").AutoFilter
+
+    On Error GoTo TratarErro
+
+    Application.DisplayAlerts = True
+    Application.EnableEvents = eventosAntes
+    Application.ScreenUpdating = True
+    
+    Call AtualizarConflitos
+
+    MsgBox "HORA-EXTRA redefinida com sucesso!", vbInformation
+
+    Exit Sub
+
+TratarErro:
+
+    Application.DisplayAlerts = True
+    Application.EnableEvents = eventosAntes
+    Application.ScreenUpdating = True
+
+    Call AtualizarConflitos
+
+MsgBox "HORA-EXTRA redefinida com sucesso!", vbInformation
+
+End Sub
+
+'=================================================
+' CONTROLE DE CONFLITOS
+'
+' REGRA:
+' Mesmo IPN + Mesma Data = Conflito
+'
+' HORA-EXTRA
+' P:R = Vermelho
+'
+' DISPONIBILIDADE
+' Verde   = Disponível e utilizado
+' Vermelho = Conflito de recurso
+'=================================================
+
+Sub AtualizarConflitos()
+
+    Dim wsHE As Worksheet
+    Dim wsDisp As Worksheet
+    Dim wsModelo As Worksheet
+
+    Dim dictQtd As Object
+
+    Dim ultimaHE As Long
+    Dim ultimaDisp As Long
+
+    Dim i As Long
+    Dim chave As String
+
+    Dim ipn As String
+    Dim dataHE As String
+
+    Set wsHE = ThisWorkbook.Sheets("HORA-EXTRA")
+    Set wsDisp = ThisWorkbook.Sheets("DISPONIBILIDADE")
+    Set wsModelo = ThisWorkbook.Sheets("FORMATAÇÃO-ORIGINAL")
+
+    Set dictQtd = CreateObject("Scripting.Dictionary")
+
+    ultimaHE = wsHE.Cells(wsHE.Rows.Count, "X").End(xlUp).Row
+
+    '=================================================
+    ' MONTA DICIONÁRIO
+    '=================================================
+
+    For i = 2 To ultimaHE
+
+        ipn = Trim(UCase(wsHE.Cells(i, "P").Value))
+
+        If IsDate(wsHE.Cells(i, "H").Value) Then
+
+            dataHE = Format(wsHE.Cells(i, "H").Value, "yyyymmdd")
+
+            If ipn <> "" Then
+
+                chave = ipn & "|" & dataHE
+
+                If dictQtd.Exists(chave) Then
+                    dictQtd(chave) = dictQtd(chave) + 1
+                Else
+                    dictQtd.Add chave, 1
+                End If
+
+            End If
+
+        End If
+
+    Next i
+
+    '=================================================
+    ' RESTAURA FORMATAÇÃO ORIGINAL
+    '=================================================
+
+    For i = 2 To ultimaHE
+
+        If i <= 9 Then
+
+            wsModelo.Range("P2:R2").Copy
+
+        Else
+
+            wsModelo.Range("P10:R10").Copy
+
+        End If
+
+        wsHE.Range("P" & i & ":R" & i).PasteSpecial _
+            Paste:=xlPasteFormats
+
+    Next i
+
+    Application.CutCopyMode = False
+
+    '=================================================
+    ' PINTA CONFLITOS NA HORA EXTRA
+    '=================================================
+
+    For i = 2 To ultimaHE
+
+        ipn = Trim(UCase(wsHE.Cells(i, "P").Value))
+
+        If IsDate(wsHE.Cells(i, "H").Value) Then
+
+            dataHE = Format(wsHE.Cells(i, "H").Value, "yyyymmdd")
+
+            chave = ipn & "|" & dataHE
+
+            If dictQtd.Exists(chave) Then
+
+                If dictQtd(chave) > 1 Then
+
+                    wsHE.Range("P" & i & ":R" & i).Interior.Color = _
+                        RGB(255, 199, 206)
+
+                End If
+
+            End If
+
+        End If
+
+    Next i
+
+    '=================================================
+    ' DISPONIBILIDADE
+    '=================================================
+
+    ultimaDisp = wsDisp.Cells(wsDisp.Rows.Count, "A").End(xlUp).Row
+
+    For i = 2 To ultimaDisp
+
+        wsDisp.Range("A" & i & ":H" & i).Interior.Pattern = xlNone
+
+    Next i
+
+    '=================================================
+    ' VERDE / VERMELHO
+    '=================================================
+
+    For i = 2 To ultimaDisp
+
+        ipn = Trim(UCase(wsDisp.Cells(i, "E").Value))
+
+        If IsDate(wsDisp.Cells(i, "F").Value) Then
+
+            dataHE = Format(wsDisp.Cells(i, "F").Value, "yyyymmdd")
+
+            chave = ipn & "|" & dataHE
+
+            If dictQtd.Exists(chave) Then
+
+                If dictQtd(chave) > 1 Then
+
+                    wsDisp.Range("A" & i & ":H" & i).Interior.Color = _
+                        RGB(255, 199, 206)
+
+                Else
+
+                    wsDisp.Range("A" & i & ":H" & i).Interior.Color = _
+                        RGB(198, 239, 206)
+
+                End If
+
+            End If
+
+        End If
+
+    Next i
+
+End Sub
+
+Sub ImportarSolicitacoes()
+
+    Call SincronizarSolicitacoes
+
+    MsgBox "Importação concluída!", vbInformation
+
+End Sub
+
+'=================================================
+' VERIFICAÇÃO DO SISTEMA
+'
+' Finalidade:
+' Restabelecer automaticamente condições
+' comuns de funcionamento do Excel.
+'
+' Verifica:
+'
+' - Application.EnableEvents
+' - Application.ScreenUpdating
+' - Application.Calculation
+' - frmProgresso aberto indevidamente
+'
+' Utilização:
+'
+' Aba SISTEMA
+'  -> Botão VERIFICAR SISTEMA
+'
+'=================================================
+
+Sub VerificarSistema()
+
+    Dim Msg As String
+
+    If Application.EnableEvents = False Then
+        Application.EnableEvents = True
+        Msg = Msg & "? Eventos reativados" & vbCrLf
+    End If
+
+    If Application.ScreenUpdating = False Then
+        Application.ScreenUpdating = True
+        Msg = Msg & "? Atualização de tela reativada" & vbCrLf
+    End If
+
+    If Application.Calculation <> xlCalculationAutomatic Then
+        Application.Calculation = xlCalculationAutomatic
+        Msg = Msg & "? Cálculo automático restaurado" & vbCrLf
+    End If
+
+    On Error Resume Next
+    Unload frmProgresso
+    On Error GoTo 0
+
+    If Msg = "" Then
+        Msg = "Nenhum problema encontrado!"
+    End If
+
+    MsgBox Msg, vbInformation, "Sistema operacional"
+
+End Sub
